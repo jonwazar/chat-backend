@@ -1,47 +1,56 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import os
+import uvicorn
 import chromadb
-from llama_index.core.indices.vector_store.base import VectorStoreIndex
-from llama_index.core import StorageContext
+from llama_index.core import VectorStoreIndex, StorageContext, load_index_from_storage
 from llama_index.vector_stores.chroma import ChromaVectorStore
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding  # Hugging Face for embeddings
-from llama_index.llms.openai import OpenAI  # OpenAI for chat responses
+from llama_index.llms import OpenAI
+from llama_index.embeddings import HuggingFaceEmbedding
 
 # Initialize FastAPI app
 app = FastAPI()
 
+# Enable CORS (Allows requests from your frontend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins (you can restrict this later)
+    allow_origins=["https://jonwazar.github.io"],  # Change "*" to restrict access to your frontend only
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
+# Define request model
+class ChatRequest(BaseModel):
+    message: str
+
+# Get OpenAI API Key from environment variables
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise RuntimeError("Missing OpenAI API Key. Set it in Render's environment variables.")
+
+# Initialize OpenAI LLM
+llm = OpenAI(api_key=OPENAI_API_KEY)
+
+# Initialize Hugging Face Embedding model
+hf_embeddings = HuggingFaceEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 # Initialize ChromaDB client and collection
-db = chromadb.PersistentClient(path="./chroma_db")  # Ensure this matches Colab path
+db = chromadb.PersistentClient(path="./chroma_db")  
 chroma_collection = db.get_or_create_collection("healthGPT")
 
 # Assign Chroma as the vector store
 vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
 storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-# Load index from storage with Hugging Face embeddings
+# Load index from storage
 try:
-    embed_model = HuggingFaceEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")  # Update model as needed
-    index = VectorStoreIndex.from_vector_store(vector_store=vector_store, embed_model=embed_model)
+    index = VectorStoreIndex.from_vector_store(vector_store=vector_store, embed_model=hf_embeddings)
 except Exception as e:
     raise RuntimeError("Failed to load index from storage") from e
 
-# Initialize OpenAI LLM for response generation
-llm = OpenAI(model="gpt-3.5-turbo", api_key="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")
-
-# Define request model
-class ChatRequest(BaseModel):
-    message: str
-
+# Define the /chat endpoint
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
     try:
@@ -52,4 +61,7 @@ async def chat_endpoint(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Run locally with: uvicorn main:app --host 0.0.0.0 --port 8000
+# Run Uvicorn if script is executed directly
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))  # Use Render's PORT variable
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
